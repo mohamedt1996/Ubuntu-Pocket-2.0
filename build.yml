@@ -1,0 +1,120 @@
+# Put this ONE file at: .github/workflows/build.yml
+name: Build Ubuntu Pocket IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  UTM_REF: main   # change to a UTM release tag if main ever breaks
+
+jobs:
+  ubuntu-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Ubuntu arm64 disk with Docker
+        run: bash build-image.sh "$GITHUB_WORKSPACE/vm"
+      - name: Pack
+        run: tar -C vm -cf vm.tar .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vm
+          path: vm.tar
+          compression-level: 0
+
+  qemu:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - name: Get UTM source
+        run: |
+          git clone --depth 1 --branch "$UTM_REF" https://github.com/utmapp/UTM.git utm
+          cd utm && git submodule update --init --recursive --depth 1 || true
+          echo "UTM_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+      - name: Cache QEMU build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: qemu-out.tar
+          key: qemu-ios-arm64-${{ env.UTM_SHA }}
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install bison pkg-config gettext glib libgpg-error nasm make meson ninja autoconf automake libtool cmake || true
+          echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+          pip3 install --break-system-packages six pyparsing pyyaml setuptools distlib || pip3 install six pyparsing pyyaml setuptools distlib
+      - name: Build QEMU + dependencies for iOS (takes 1-2 hours the first time)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd utm
+          ./scripts/build_dependencies.sh -p ios -a arm64
+      - name: Collect QEMU frameworks
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          SYS=$(ls -d utm/sysroot-ios-arm64* | head -1)
+          echo "sysroot: $SYS"; ls "$SYS"; ls "$SYS/Frameworks" | head -100
+          mkdir -p out/Frameworks out/share
+          for f in "$SYS"/Frameworks/*; do
+            n=$(basename "$f")
+            case "$n" in
+              qemu-*-softmmu*|libqemu-*-softmmu*)
+                [[ "$n" == *aarch64-softmmu* ]] && cp -R "$f" out/Frameworks/ ;;
+              *) cp -R "$f" out/Frameworks/ ;;
+            esac
+          done
+          cp -R "$SYS/share/qemu" out/share/qemu
+          tar -cf qemu-out.tar -C out .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu
+          path: qemu-out.tar
+
+  app:
+    needs: [ubuntu-image, qemu]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: vm }
+      - uses: actions/download-artifact@v4
+        with: { name: qemu }
+      - name: Arrange flat repo into an Xcode project
+        run: |
+          brew install xcodegen
+          mkdir -p App
+          cp *.swift App/
+          xcodegen generate
+      - name: Build app (unsigned)
+        run: |
+          xcodebuild -project UbuntuPocket.xcodeproj -scheme UbuntuPocket \
+            -sdk iphoneos -configuration Release -derivedDataPath build \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Add QEMU and Ubuntu into the app, package IPA
+        run: |
+          APP=build/Build/Products/Release-iphoneos/UbuntuPocket.app
+          mkdir -p qemu-out vm "$APP/Frameworks" "$APP/qemu" "$APP/VM"
+          tar -xf qemu-out.tar -C qemu-out
+          tar -xf vm.tar -C vm
+          cp -R qemu-out/Frameworks/* "$APP/Frameworks/"
+          cp -R qemu-out/share/qemu/* "$APP/qemu/"
+          cp vm/Image vm/initrd vm/disk.qcow2 "$APP/VM/"
+          mkdir Payload && cp -R "$APP" Payload/
+          zip -qr -1 -y UbuntuPocket.ipa Payload
+          ls -lh UbuntuPocket.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UbuntuPocket-ipa
+          path: UbuntuPocket.ipa
+          compression-level: 0
+      - name: Publish release (easy download on iPhone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Ubuntu Pocket build ${{ github.run_number }}
+          files: UbuntuPocket.ipa
