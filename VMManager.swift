@@ -103,7 +103,9 @@ final class VMManager: ObservableObject {
             "-smp", "\(cpus)",
             "-m", "\(memoryMB)",
             // tb-size caps the JIT code cache (default would be 1 GB of extra RAM)
-            "-accel", "tcg,thread=multi,tb-size=256",
+            "-accel", JITRegion.shared.isReady
+                ? "tcg,thread=multi,split-wx=on,tb-size=\(JITRegion.sizeMB)"
+                : "tcg,thread=multi,tb-size=256",
             "-kernel", kernel,
             "-initrd", initrd,
             "-append", "root=LABEL=cloudimg-rootfs rw console=ttyAMA0 quiet systemd.show_status=1",
@@ -138,6 +140,13 @@ final class VMManager: ObservableObject {
         guard let path = findQemu() else { throw err("QEMU framework not found in the app bundle") }
         guard let h = dlopen(path, RTLD_NOW | RTLD_GLOBAL) else {
             throw err("dlopen failed: " + String(cString: dlerror()))
+        }
+        if JIT.needsScript {
+            guard JITRegion.shared.isReady else {
+                throw err("The JIT code region isn't ready. Launch with StikDebug's universal.js script (see the note under JIT).")
+            }
+            let patched = jit26_install_qemu_hooks("aarch64-softmmu")
+            guard patched >= 2 else { throw err("Could not redirect QEMU's JIT allocator (patched \(patched))") }
         }
         guard let pInit = dlsym(h, "qemu_init"),
               let pLoop = dlsym(h, "qemu_main_loop"),
