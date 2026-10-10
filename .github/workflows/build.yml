@@ -78,7 +78,7 @@ jobs:
         run: |
           brew install xcodegen
           mkdir -p App
-          cp *.swift App/
+          cp *.swift *.c *.h App/
           xcodegen generate
       - name: Build app (unsigned)
         run: |
