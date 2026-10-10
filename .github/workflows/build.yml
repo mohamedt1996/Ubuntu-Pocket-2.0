@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  UTM_REF: main   # change to a UTM release tag if main ever breaks
+  UTM_TAG: ""   # empty = newest UTM release; or set e.g. v5.0.1
 
 jobs:
   ubuntu-image:
@@ -28,38 +28,26 @@ jobs:
           compression-level: 0
 
   qemu:
-    runs-on: macos-15
-    timeout-minutes: 300
+    # Reuse QEMU that UTM already compiled for iOS instead of building it (saves 1-2 hours)
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Get UTM source
+      - name: Download prebuilt UTM.ipa
         run: |
-          git clone --depth 1 --branch "$UTM_REF" https://github.com/utmapp/UTM.git utm
-          cd utm && git submodule update --init --recursive --depth 1 || true
-          echo "UTM_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
-      - name: Cache QEMU build
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: qemu-out.tar
-          key: qemu-ios-arm64-${{ env.UTM_SHA }}
-      - name: Install build tools
-        if: steps.cache.outputs.cache-hit != 'true'
+          TAG="${UTM_TAG:-}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api repos/utmapp/UTM/releases --jq '[.[] | select(any(.assets[]; .name=="UTM.ipa"))][0].tag_name')
+          fi
+          echo "Using UTM $TAG"
+          gh release download "$TAG" --repo utmapp/UTM --pattern UTM.ipa
+      - name: Extract QEMU frameworks and data
         run: |
-          brew install bison pkg-config gettext glib libgpg-error nasm make meson ninja autoconf automake libtool cmake || true
-          echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
-          python3 -m pip install --break-system-packages six pyparsing pyyaml setuptools distlib mako jinja2 packaging
-      - name: Build QEMU + dependencies for iOS (takes 1-2 hours the first time)
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          cd utm
-          ./scripts/build_dependencies.sh -p ios -a arm64
-      - name: Collect QEMU frameworks
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          SYS=$(ls -d utm/sysroot-ios-arm64* | head -1)
-          echo "sysroot: $SYS"; ls "$SYS"; ls "$SYS/Frameworks" | head -100
-          mkdir -p out/Frameworks out/share
-          for f in "$SYS"/Frameworks/*; do
+          unzip -q UTM.ipa -d utm
+          APP=$(ls -d utm/Payload/*.app | head -1)
+          ls "$APP/Frameworks"
+          mkdir -p out/Frameworks out/share/qemu
+          for f in "$APP"/Frameworks/*; do
             n=$(basename "$f")
             case "$n" in
               qemu-*-softmmu*|libqemu-*-softmmu*)
@@ -67,7 +55,10 @@ jobs:
               *) cp -R "$f" out/Frameworks/ ;;
             esac
           done
-          cp -R "$SYS/share/qemu" out/share/qemu
+          ls out/Frameworks | grep -q aarch64-softmmu || { echo "aarch64 QEMU not found in UTM.ipa"; exit 1; }
+          FD=$(find "$APP" -name 'edk2-aarch64-code.fd' | head -1)
+          if [ -n "$FD" ]; then cp -R "$(dirname "$FD")"/. out/share/qemu/; fi
+          ls -la out/share/qemu | head
           tar -cf qemu-out.tar -C out .
       - uses: actions/upload-artifact@v4
         with:
@@ -102,7 +93,7 @@ jobs:
           tar -xf qemu-out.tar -C qemu-out
           tar -xf vm.tar -C vm
           cp -R qemu-out/Frameworks/* "$APP/Frameworks/"
-          cp -R qemu-out/share/qemu/* "$APP/qemu/"
+          cp -R qemu-out/share/qemu/. "$APP/qemu/"
           cp vm/Image vm/initrd vm/disk.qcow2 "$APP/VM/"
           mkdir Payload && cp -R "$APP" Payload/
           zip -qr -1 -y UbuntuPocket.ipa Payload
