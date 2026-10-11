@@ -28,12 +28,15 @@ jobs:
         run: |
           sh -n guest-update.sh
           python3 tests/check-network-console.py
+          python3 tests/check-dns-update.py
+          python3 tests/check-services-probe.py
       - name: Build Debian 13 arm64 disk with Docker
         run: bash build-image.sh "$GITHUB_WORKSPACE/vm"
       - name: Verify Linux boot and Docker before packaging
         run: |
           sudo apt-get install -y --no-install-recommends qemu-system-arm
           python3 -u smoke-boot.py vm
+          python3 -u smoke-services.py vm
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -101,15 +104,20 @@ jobs:
         with: { name: vm }
       - uses: actions/download-artifact@v4
         with: { name: qemu }
+      - name: Test forwarding validation
+        run: |
+          cp tests/port-forward-tests.swift /tmp/main.swift
+          swiftc PortForward.swift /tmp/main.swift -o /tmp/port-tests
+          /tmp/port-tests
       - name: Arrange flat repo into an Xcode project
         run: |
           brew install xcodegen
           mkdir -p App
           # Copy ONLY this app's files, so other files in the repo can't interfere
-          cp UbuntuPocketApp.swift VMManager.swift TerminalScreen.swift JIT.swift JIT26.c JIT26.h BackgroundExecution.swift App/
+          cp UbuntuPocketApp.swift VMManager.swift TerminalScreen.swift JIT.swift JIT26.c JIT26.h BackgroundExecution.swift PortForward.swift PortSettings.swift QMPChannel.swift TerminalPiP.swift App/
           xcodegen generate
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" App/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.7" App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.1.0" App/Info.plist
       - name: Build app (unsigned)
         run: |
           set -o pipefail
@@ -131,7 +139,7 @@ jobs:
           cp -R qemu-out/share/qemu/. "$APP/qemu/"
           cp vm/Image vm/initrd vm/disk.qcow2 "$APP/VM/"
           cp guest-update.sh "$APP/guest-update.sh"
-          printf 'source=%s\nutm=v4.7.5\nrevision=bootfix-7\n' "$GITHUB_SHA" > "$APP/VM/build-info.txt"
+          printf 'source=%s\nutm=v4.7.5\nrevision=server-tools-1\n' "$GITHUB_SHA" > "$APP/VM/build-info.txt"
           mkdir Payload && cp -R "$APP" Payload/
           zip -qr -1 -y DebianPocket.ipa Payload
           ls -lh DebianPocket.ipa
