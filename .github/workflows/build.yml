@@ -1,5 +1,5 @@
 # Put this ONE file at: .github/workflows/build.yml
-name: Build Ubuntu Pocket IPA
+name: Build Debian Pocket IPA
 
 on:
   workflow_dispatch:
@@ -13,11 +13,11 @@ env:
   UTM_TAG: ""   # empty = newest UTM release; or set e.g. v5.0.1
 
 jobs:
-  ubuntu-image:
+  disk-image:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Build Ubuntu arm64 disk with Docker
+      - name: Build Debian 13 arm64 disk with Docker
         run: bash build-image.sh "$GITHUB_WORKSPACE/vm"
       - name: Pack
         run: tar -C vm -cf vm.tar .
@@ -66,7 +66,7 @@ jobs:
           path: qemu-out.tar
 
   app:
-    needs: [ubuntu-image, qemu]
+    needs: [disk-image, qemu]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +86,7 @@ jobs:
             -sdk iphoneos -configuration Release -derivedDataPath build \
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
-      - name: Add QEMU and Ubuntu into the app, package IPA
+      - name: Add QEMU and Debian into the app, package IPA
         run: |
           APP=build/Build/Products/Release-iphoneos/UbuntuPocket.app
           mkdir -p qemu-out vm "$APP/Frameworks" "$APP/qemu" "$APP/VM"
@@ -96,16 +96,16 @@ jobs:
           cp -R qemu-out/share/qemu/. "$APP/qemu/"
           cp vm/Image vm/initrd vm/disk.qcow2 "$APP/VM/"
           mkdir Payload && cp -R "$APP" Payload/
-          zip -qr -1 -y UbuntuPocket.ipa Payload
-          ls -lh UbuntuPocket.ipa
+          zip -qr -1 -y DebianPocket.ipa Payload
+          ls -lh DebianPocket.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: UbuntuPocket-ipa
-          path: UbuntuPocket.ipa
+          name: DebianPocket.ipa
+          path: DebianPocket.ipa
           compression-level: 0
       - name: Publish release (easy download on iPhone)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Ubuntu Pocket build ${{ github.run_number }}
-          files: UbuntuPocket.ipa
+          name: Debian Pocket build ${{ github.run_number }}
+          files: DebianPocket.ipa
