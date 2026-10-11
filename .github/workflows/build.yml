@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test JIT allocation contract
         run: python3 tests/check-jit-contract.py
+      - name: Test Docker probe error handling
+        run: python3 tests/check-docker-probe.py
       - name: Build Debian 13 arm64 disk with Docker
         run: bash build-image.sh "$GITHUB_WORKSPACE/vm"
       - name: Verify Linux boot and Docker before packaging
@@ -101,7 +103,7 @@ jobs:
           cp UbuntuPocketApp.swift VMManager.swift TerminalScreen.swift JIT.swift JIT26.c JIT26.h App/
           xcodegen generate
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" App/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.3" App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.4" App/Info.plist
       - name: Build app (unsigned)
         run: |
           set -o pipefail
@@ -122,7 +124,7 @@ jobs:
           cp -R qemu-out/Frameworks/* "$APP/Frameworks/"
           cp -R qemu-out/share/qemu/. "$APP/qemu/"
           cp vm/Image vm/initrd vm/disk.qcow2 "$APP/VM/"
-          printf 'source=%s\nutm=v4.7.5\nrevision=bootfix-3\n' "$GITHUB_SHA" > "$APP/VM/build-info.txt"
+          printf 'source=%s\nutm=v4.7.5\nrevision=bootfix-4\n' "$GITHUB_SHA" > "$APP/VM/build-info.txt"
           mkdir Payload && cp -R "$APP" Payload/
           zip -qr -1 -y DebianPocket.ipa Payload
           ls -lh DebianPocket.ipa
