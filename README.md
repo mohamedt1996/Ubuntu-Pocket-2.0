@@ -1,4 +1,4 @@
-# Debian Pocket — bootfix-2 (UTM 4.7.5)
+# Debian Pocket — bootfix-3 (UTM 4.7.5)
 
 This is a revised SOURCE build kit, not a compiled IPA. It retains Debian 13,
 Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
@@ -12,7 +12,7 @@ Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
    gate and the Xcode build before it packages a release.
 3. Install the new `DebianPocket.ipa` into LiveContainer, replacing the existing
    app while preserving its data. Fully close the existing session first.
-4. Confirm settings and the terminal say **bootfix-2 / UTM 4.7.5**. If they do not,
+4. Confirm settings and the terminal say **bootfix-3 / UTM 4.7.5**. If they do not,
    you are still running the previous IPA.
 5. Keep your working StikDebug universal.js setup for LiveContainer. Start with
    **1024 MB**, **1 CPU**, and an **empty Extra QEMU arguments** field. Previously
@@ -85,3 +85,16 @@ fully close and relaunch; QEMU cannot safely be initialized twice in one process
 - https://github.com/utmapp/qemu/blob/v10.0.2-utm/system/runstate.c
 - https://github.com/utmapp/qemu/blob/v10.0.2-utm/tcg/region.c
 - https://github.com/utmapp/qemu/blob/v10.0.2-utm/chardev/char-socket.c
+
+## bootfix-3 — confirmed CI blocker
+
+Run 38114200743 timed out because systemd-firstboot stopped at
+"Please configure your system! -- Press any key to proceed --". Linux reached
+userspace; this run did not reach the Docker verification step.
+
+The image builder now configures locale/timezone and masks systemd-firstboot.
+Both CI and iOS pass systemd.firstboot=off (also applies to an existing disk).
+The smoke test streams console output, prints progress every 15 seconds, and
+fails immediately if the interactive wizard reappears. The 600-second deadline
+and Docker success requirement are retained. This fix has not yet been rerun
+on GitHub or verified on the iPhone.

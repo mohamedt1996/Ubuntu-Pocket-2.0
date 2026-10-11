@@ -197,7 +197,7 @@ final class VMManager: ObservableObject {
                 : "tcg,thread=single,tb-size=128",
             "-kernel", kernel,
             "-initrd", initrd,
-            "-append", "root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1",
+            "-append", "root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.firstboot=off",
             "-drive", "if=none,id=hd0,file=\(diskURL.path),format=qcow2,cache=writeback,discard=unmap",
             "-device", "virtio-blk-pci,drive=hd0",
             "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22",
@@ -280,7 +280,7 @@ final class VMManager: ObservableObject {
         t.stackSize = 8 << 20
         bootStart = Date()
         DispatchQueue.main.async { self.state = .booting }
-        emitNote("[Debian Pocket] Build bootfix-2 / UTM 4.7.5 / QEMU 10.0.2\n[Debian Pocket] Starting QEMU: \(args.dropFirst().joined(separator: " "))\n\n")
+        emitNote("[Debian Pocket] Build bootfix-3 / UTM 4.7.5 / QEMU 10.0.2\n[Debian Pocket] Starting QEMU: \(args.dropFirst().joined(separator: " "))\n\n")
         DispatchQueue.main.async { self.startLogMirror() }
         t.start()
     }

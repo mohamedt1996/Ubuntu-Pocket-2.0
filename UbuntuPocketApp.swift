@@ -52,7 +52,7 @@ struct ContentView: View {
     private var settings: some View {
         NavigationView {
             Form {
-                Section { Text("bootfix-2 · UTM 4.7.5").font(.caption) }
+                Section { Text("bootfix-3 · UTM 4.7.5").font(.caption) }
                 Section(footer: Text(jitHelp).font(.footnote)) {
                     HStack {
                         Text("JIT")

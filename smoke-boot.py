@@ -20,7 +20,7 @@ args = [
     '-machine', 'virt', '-cpu', 'cortex-a72', '-smp', '1', '-m', '1024',
     '-accel', 'tcg,thread=single,tb-size=256',
     '-kernel', str(vm / 'Image'), '-initrd', str(vm / 'initrd'),
-    '-append', 'root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1',
+    '-append', 'root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.firstboot=off',
     '-drive', f'if=none,id=hd0,file={vm / "disk.qcow2"},format=qcow2,cache=writeback,discard=unmap',
     '-snapshot', '-device', 'virtio-blk-pci,drive=hd0',
     '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0,romfile=',
@@ -30,12 +30,19 @@ args = [
 with open(vm / 'smoke-qemu.log', 'wb') as errors, open(log_path, 'wb') as log:
     proc = subprocess.Popen(args, pass_fds=(guest.fileno(),), stdout=errors, stderr=errors)
     guest.close()
-    deadline = time.monotonic() + int(os.getenv('SMOKE_TIMEOUT', '600'))
+    started = time.monotonic()
+    deadline = started + int(os.getenv('SMOKE_TIMEOUT', '600'))
+    next_report = started + 15
+    print('Boot test started: waiting for Debian shell, then Docker (maximum 600 seconds)', flush=True)
     tail = b''
     sent = False
     passed = False
     try:
         while time.monotonic() < deadline:
+            if time.monotonic() >= next_report:
+                print(f'\n[boot test: {int(time.monotonic() - started)}s] waiting for ' +
+                      ('Docker response' if sent else 'root shell'), flush=True)
+                next_report = time.monotonic() + 15
             if proc.poll() is not None:
                 raise RuntimeError(f'QEMU exited early ({proc.returncode}); inspect smoke-qemu.log')
             readable, _, _ = select.select([parent], [], [], 1)
@@ -46,11 +53,16 @@ with open(vm / 'smoke-qemu.log', 'wb') as errors, open(log_path, 'wb') as log:
                 raise RuntimeError('Serial socket closed before boot verification')
             log.write(data)
             log.flush()
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
             tail = (tail + data)[-65536:]
-            if not sent and re.search(rb'root@debian-pocket:[^\r\n]*#', tail):
+            clean = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', tail)
+            if b'Please configure your system!' in clean or b'-- Press any key to proceed --' in clean:
+                raise RuntimeError('Interactive first-boot wizard blocked startup; check image provisioning and systemd.firstboot=off')
+            if not sent and re.search(rb'root@debian-pocket:[^\r\n]*#', clean):
                 parent.sendall(b"for i in $(seq 1 60); do if docker info >/dev/null 2>&1; then printf '\\n%s\\n' DEBIAN_POCKET_DOCKER_READY; break; fi; sleep 1; done\n")
                 sent = True
-            if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_READY\r?\n', tail):
+            if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_READY\r?\n', clean):
                 passed = True
                 print('PASS: ARM64 kernel, root filesystem, serial login, and Docker daemon')
                 break

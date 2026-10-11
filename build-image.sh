@@ -51,6 +51,12 @@ apt-get install -y --no-install-recommends systemd-networkd || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
+# This image is preconfigured: never block unattended boot on firstboot prompts.
+printf 'LANG=C.UTF-8\n' > /etc/locale.conf
+printf 'LANG=C.UTF-8\n' > /etc/default/locale
+ln -snf /usr/share/zoneinfo/Etc/UTC /etc/localtime
+systemctl mask systemd-firstboot.service
+
 # Login: root / debian, auto-login on the serial console
 echo 'root:debian' | chpasswd
 mkdir -p /etc/systemd/system/serial-getty@ttyAMA0.service.d
