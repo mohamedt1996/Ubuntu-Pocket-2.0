@@ -74,27 +74,19 @@ static int in_region(const void *p) {
                        (a >= (uintptr_t)g_rw && a < (uintptr_t)g_rw + g_size));
 }
 
-int jit26_handed(void) { return g_handed; }
-
 static void *hook_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
-    int big = len >= (16u << 20);
-    if (g_ready && !g_handed && len <= g_size && big && fd == -1 && (flags & MAP_ANON) && !(prot & PROT_EXEC)) {
+    if (g_ready && !g_handed && len == g_size && fd == -1 && (flags & MAP_ANON) && !(prot & PROT_EXEC)) {
         g_handed = 1;
-        fprintf(stderr, "[jit26] mmap %zu MB RW -> gave QEMU the prepared code buffer\n", len >> 20);
+        fprintf(stderr, "[jit26] gave QEMU the prepared %zu MB code buffer\n", len >> 20);
         return g_rw;
     }
-    void *r = mmap(addr, len, prot, flags, fd, off);
-    if (big) fprintf(stderr, "[jit26] mmap %zu MB prot=%d flags=0x%x fd=%d -> %p%s\n",
-                     len >> 20, prot, flags, fd, r, r == MAP_FAILED ? " (FAILED)" : "");
-    return r;
+    return mmap(addr, len, prot, flags, fd, off);
 }
 
 static kern_return_t hook_mach_vm_remap(vm_map_t tt, mach_vm_address_t *ta, mach_vm_size_t size,
                                         mach_vm_offset_t mask, int flags, vm_map_t st,
                                         mach_vm_address_t sa, boolean_t copy, vm_prot_t *cur,
                                         vm_prot_t *max, vm_inherit_t inh) {
-    fprintf(stderr, "[jit26] mach_vm_remap src=%p size=%llu %s\n", (void *)(uintptr_t)sa,
-            (unsigned long long)size, sa == (mach_vm_address_t)(uintptr_t)g_rw ? "(our buffer)" : "");
     if (g_ready && sa == (mach_vm_address_t)(uintptr_t)g_rw) {
         *ta = (mach_vm_address_t)(uintptr_t)g_rx;
         if (cur) *cur = VM_PROT_READ | VM_PROT_EXECUTE;
@@ -107,7 +99,6 @@ static kern_return_t hook_mach_vm_remap(vm_map_t tt, mach_vm_address_t *ta, mach
 static kern_return_t hook_vm_remap(vm_map_t tt, vm_address_t *ta, vm_size_t size, vm_address_t mask,
                                    int flags, vm_map_t st, vm_address_t sa, boolean_t copy,
                                    vm_prot_t *cur, vm_prot_t *max, vm_inherit_t inh) {
-    fprintf(stderr, "[jit26] vm_remap src=%p %s\n", (void *)sa, sa == (vm_address_t)g_rw ? "(our buffer)" : "");
     if (g_ready && sa == (vm_address_t)g_rw) {
         *ta = (vm_address_t)g_rx;
         if (cur) *cur = VM_PROT_READ | VM_PROT_EXECUTE;
@@ -119,9 +110,7 @@ static kern_return_t hook_vm_remap(vm_map_t tt, vm_address_t *ta, vm_size_t size
 
 static int hook_mprotect(void *addr, size_t len, int prot) {
     if (in_region(addr)) return 0;      // region protections are owned by the debugger
-    int r = mprotect(addr, len, prot);
-    if (prot & PROT_EXEC) fprintf(stderr, "[jit26] mprotect %p len=%zu prot=%d -> %d\n", addr, len, prot, r);
-    return r;
+    return mprotect(addr, len, prot);
 }
 
 static int hook_munmap(void *addr, size_t len) {
