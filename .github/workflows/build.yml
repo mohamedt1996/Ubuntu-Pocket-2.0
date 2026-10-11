@@ -10,15 +10,27 @@ permissions:
   contents: write
 
 env:
-  UTM_TAG: ""   # empty = newest UTM release; or set e.g. v5.0.1
+  UTM_TAG: "v4.7.5"   # QEMU from this UTM release (the JIT hooks were checked against it)
 
 jobs:
   disk-image:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Test JIT allocation contract
+        run: python3 tests/check-jit-contract.py
       - name: Build Debian 13 arm64 disk with Docker
         run: bash build-image.sh "$GITHUB_WORKSPACE/vm"
+      - name: Verify Linux boot and Docker before packaging
+        run: |
+          sudo apt-get install -y qemu-system-arm
+          python3 smoke-boot.py vm
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-boot-diagnostics
+          path: vm/smoke-*.log
       - name: Pack
         run: tar -C vm -cf vm.tar .
       - uses: actions/upload-artifact@v4
@@ -39,12 +51,19 @@ jobs:
           if [ -z "$TAG" ]; then
             TAG=$(gh api repos/utmapp/UTM/releases --jq '[.[] | select(any(.assets[]; .name=="UTM.ipa"))][0].tag_name')
           fi
+          test "$TAG" = "v4.7.5"
           echo "Using UTM $TAG"
           gh release download "$TAG" --repo utmapp/UTM --pattern UTM.ipa
       - name: Extract QEMU frameworks and data
         run: |
           unzip -q UTM.ipa -d utm
           APP=$(ls -d utm/Payload/*.app | head -1)
+          python3 - "$APP/Info.plist" <<'PYCODE'
+          import plistlib, sys
+          with open(sys.argv[1], 'rb') as f:
+              version = plistlib.load(f)['CFBundleShortVersionString']
+          assert version == '4.7.5', f'Unexpected UTM version: {version}'
+          PYCODE
           ls "$APP/Frameworks"
           mkdir -p out/Frameworks out/share/qemu
           for f in "$APP"/Frameworks/*; do
@@ -78,14 +97,22 @@ jobs:
         run: |
           brew install xcodegen
           mkdir -p App
-          cp *.swift *.c *.h App/
+          # Copy ONLY this app's files, so other files in the repo can't interfere
+          cp UbuntuPocketApp.swift VMManager.swift TerminalScreen.swift JIT.swift JIT26.c JIT26.h App/
           xcodegen generate
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.2" App/Info.plist
       - name: Build app (unsigned)
         run: |
+          set -o pipefail
           xcodebuild -project UbuntuPocket.xcodeproj -scheme UbuntuPocket \
             -sdk iphoneos -configuration Release -derivedDataPath build \
             -skipPackagePluginValidation -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tee build.log || {
+              echo "=================== COMPILER ERRORS ==================="
+              grep -E "error:|\*\* BUILD FAILED" -A3 build.log | head -80
+              exit 1
+            }
       - name: Add QEMU and Debian into the app, package IPA
         run: |
           APP=build/Build/Products/Release-iphoneos/UbuntuPocket.app
@@ -95,6 +122,7 @@ jobs:
           cp -R qemu-out/Frameworks/* "$APP/Frameworks/"
           cp -R qemu-out/share/qemu/. "$APP/qemu/"
           cp vm/Image vm/initrd vm/disk.qcow2 "$APP/VM/"
+          printf 'source=%s\nutm=v4.7.5\nrevision=bootfix-2\n' "$GITHUB_SHA" > "$APP/VM/build-info.txt"
           mkdir Payload && cp -R "$APP" Payload/
           zip -qr -1 -y DebianPocket.ipa Payload
           ls -lh DebianPocket.ipa
