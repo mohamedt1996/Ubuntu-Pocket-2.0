@@ -14,13 +14,13 @@
 
 // ---- StikDebug universal protocol -------------------------------------------------
 
-__attribute__((noinline, naked)) static void JIT26Detach(void) {
+__attribute__((noinline, optnone, naked)) static void JIT26Detach(void) {
     __asm__("mov x16, #0\n"
             "brk #0xf00d\n"
             "ret\n");
 }
 
-__attribute__((noinline, naked)) static void *JIT26PrepareRegion(void *address, size_t length) {
+__attribute__((noinline, optnone, naked)) static void *JIT26PrepareRegion(void *address, size_t length) {
     __asm__("mov x16, #1\n"
             "brk #0xf00d\n"
             "ret\n");
@@ -37,6 +37,21 @@ static int g_hook_error = 0;
 int jit26_is_ready(void) { return g_ready; }
 size_t jit26_size(void) { return g_size; }
 
+// Return 0 for detached, 1 for confirmed attached after bounded polling,
+// -1 when iOS refuses or truncates the process-status query.
+static int jit26_wait_for_detach(void) {
+    int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    for (int attempt = 0; attempt <= 40; attempt++) {
+        struct kinfo_proc info = {0};
+        size_t info_size = sizeof(info);
+        if (sysctl(mib, 4, &info, &info_size, NULL, 0) != 0) return -1;
+        if (info_size < sizeof(info)) { errno = EIO; return -1; }
+        if (!(info.kp_proc.p_flag & P_TRACED)) return 0;
+        if (attempt < 40) usleep(50000);
+    }
+    return 1;
+}
+
 int jit26_prepare(size_t size, char *err, size_t errlen) {
     if (g_ready) return 0;
     void *rx = JIT26PrepareRegion(NULL, size);
@@ -51,15 +66,15 @@ int jit26_prepare(size_t size, char *err, size_t errlen) {
     if (kr != KERN_SUCCESS) { snprintf(err, errlen, "vm_protect RW failed: %d", kr); JIT26Detach(); return -3; }
 
     JIT26Detach();
-    // UTM 4.7.5 issues brk #0x69 if P_TRACED remains set. universal.js
-    // uses a different protocol, so verify detach before QEMU can reach it.
-    int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
-    struct kinfo_proc info = {0};
-    size_t info_size = sizeof(info);
-    if (sysctl(mib, 4, &info, &info_size, NULL, 0) != 0 ||
-        (info.kp_proc.p_flag & P_TRACED)) {
-        snprintf(err, errlen, "debugger did not detach; QEMU would hit its UTM-specific breakpoint");
+    // A failed sysctl is UNKNOWN, not evidence that a debugger is attached.
+    // UTM's own is_debugger_attached() also returns false on sysctl failure.
+    int debugger_state = jit26_wait_for_detach();
+    if (debugger_state == 1) {
+        snprintf(err, errlen, "debugger still reports P_TRACED after 2 seconds; fully close LiveContainer and relaunch with universal.js");
         return -5;
+    }
+    if (debugger_state < 0) {
+        fprintf(stderr, "[jit26] debugger status unavailable (errno=%d); checking executable region directly\n", errno);
     }
 
     // Self-test: mov w0, #42 ; ret

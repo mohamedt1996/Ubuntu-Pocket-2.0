@@ -1,4 +1,4 @@
-# Debian Pocket — bootfix-4 (UTM 4.7.5)
+# Debian Pocket — bootfix-5 (UTM 4.7.5)
 
 This is a revised SOURCE build kit, not a compiled IPA. It retains Debian 13,
 Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
@@ -12,7 +12,7 @@ Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
    gate and the Xcode build before it packages a release.
 3. Install the new `DebianPocket.ipa` into LiveContainer, replacing the existing
    app while preserving its data. Fully close the existing session first.
-4. Confirm settings and the terminal say **bootfix-4 / UTM 4.7.5**. If they do not,
+4. Confirm settings and the terminal say **bootfix-5 / UTM 4.7.5**. If they do not,
    you are still running the previous IPA.
 5. Keep your working StikDebug universal.js setup for LiveContainer. Start with
    **1024 MB**, **1 CPU**, and an **empty Extra QEMU arguments** field. Previously
@@ -112,3 +112,16 @@ No fresh full VM run or iPhone launch has been performed for this revision.
 Existing persistent disks do not inherit newly installed packages from the
 bundled image: once at their root shell, run `apt-get update && apt-get install -y
 docker-cli` to update them without resetting the disk.
+
+## bootfix-5 — debugger-status regression
+
+The old guard returned the same "debugger did not detach" error for both a
+failed sysctl query and a positive P_TRACED flag. The screenshot cannot distinguish
+those cases. This revision treats failed/short queries as unknown (matching UTM's
+handling of unavailable status), retains the executable-region self-test, and
+polls a positive flag for up to two seconds before declaring detachment incomplete.
+It also disables Start until JIT preparation has completed and reports a relevant
+failure hint. It does not change StikDebug settings or erase the guest disk.
+
+A genuinely persistent P_TRACED flag still blocks launch, with an explicit message.
+This regression fix has logic tests but has not been tested on an iPhone.

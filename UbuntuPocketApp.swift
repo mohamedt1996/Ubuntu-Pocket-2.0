@@ -42,6 +42,7 @@ struct ContentView: View {
     private var jitHelp: String {
         switch jit.status {
         case .ready, .notNeeded: return ""
+        case .failed: return "JIT preparation failed before QEMU started. Fully close LiveContainer before retrying; do not reset the Debian disk."
         case .crashedLastTime:
             return "The last launch closed because no universal.js script answered. In StikDebug, set the script for LiveContainer to universal.js, then relaunch with JIT."
         default:
@@ -52,7 +53,7 @@ struct ContentView: View {
     private var settings: some View {
         NavigationView {
             Form {
-                Section { Text("bootfix-4 · UTM 4.7.5").font(.caption) }
+                Section { Text("bootfix-5 · UTM 4.7.5").font(.caption) }
                 Section(footer: Text(jitHelp).font(.footnote)) {
                     HStack {
                         Text("JIT")
@@ -87,7 +88,7 @@ struct ContentView: View {
                             if vm.state == .preparing { Spacer(); ProgressView() }
                         }
                     }
-                    .disabled(vm.state == .preparing)
+                    .disabled(vm.state == .preparing || (JIT.needsScript && jit.status != .ready))
                     if case .failed(let msg) = vm.state {
                         Text(msg).font(.footnote).foregroundColor(.red)
                     }
