@@ -60,8 +60,23 @@ with open(vm / 'smoke-qemu.log', 'wb') as errors, open(log_path, 'wb') as log:
             if b'Please configure your system!' in clean or b'-- Press any key to proceed --' in clean:
                 raise RuntimeError('Interactive first-boot wizard blocked startup; check image provisioning and systemd.firstboot=off')
             if not sent and re.search(rb'root@debian-pocket:[^\r\n]*#', clean):
-                parent.sendall(b"for i in $(seq 1 60); do if docker info >/dev/null 2>&1; then printf '\\n%s\\n' DEBIAN_POCKET_DOCKER_READY; break; fi; sleep 1; done\n")
+                command = (
+                    "if ! command -v docker >/dev/null 2>&1; then "
+                    "printf '\\n%s\\n' DEBIAN_POCKET_DOCKER_CLI_MISSING; "
+                    "else ok=0; for i in $(seq 1 12); do "
+                    "if timeout 10 docker info >/tmp/docker-check.log 2>&1; then ok=1; break; fi; sleep 2; done; "
+                    "if [ $ok -eq 1 ]; then printf '\\n%s\\n' DEBIAN_POCKET_DOCKER_READY; "
+                    "else cat /tmp/docker-check.log; "
+                    "systemctl --no-pager --full status docker.service containerd.service; "
+                    "journalctl --no-pager -u docker.service -u containerd.service -n 60; "
+                    "printf '\\n%s\\n' DEBIAN_POCKET_DOCKER_FAILED; fi; fi\n"
+                )
+                parent.sendall(command.encode())
                 sent = True
+            if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_CLI_MISSING\r?\n', clean):
+                raise RuntimeError('docker command missing: the image must install docker-cli')
+            if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_FAILED\r?\n', clean):
+                raise RuntimeError('Docker did not become ready; guest service diagnostics are above')
             if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_READY\r?\n', clean):
                 passed = True
                 print('PASS: ARM64 kernel, root filesystem, serial login, and Docker daemon')

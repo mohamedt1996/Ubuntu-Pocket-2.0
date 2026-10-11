@@ -44,8 +44,12 @@ printf '#!/bin/sh\nexit 101\n' | sudo tee $R/usr/sbin/policy-rc.d; sudo chmod +x
 sudo tee $R/tmp/setup.sh > /dev/null <<'CHROOT'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends docker.io docker-compose containerd runc iptables \
+apt-get install -y --no-install-recommends docker.io docker-cli docker-compose containerd runc iptables \
   ca-certificates curl nano htop less iproute2 iputils-ping procps
+# Check CLI availability while building, before spending time on a VM boot.
+command -v docker
+command -v dockerd
+docker --version
 # networkd is a separate package on newer Debian; ignore if it's already part of systemd
 apt-get install -y --no-install-recommends systemd-networkd || true
 apt-get clean

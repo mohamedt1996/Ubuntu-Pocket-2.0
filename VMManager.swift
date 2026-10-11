@@ -280,7 +280,7 @@ final class VMManager: ObservableObject {
         t.stackSize = 8 << 20
         bootStart = Date()
         DispatchQueue.main.async { self.state = .booting }
-        emitNote("[Debian Pocket] Build bootfix-3 / UTM 4.7.5 / QEMU 10.0.2\n[Debian Pocket] Starting QEMU: \(args.dropFirst().joined(separator: " "))\n\n")
+        emitNote("[Debian Pocket] Build bootfix-4 / UTM 4.7.5 / QEMU 10.0.2\n[Debian Pocket] Starting QEMU: \(args.dropFirst().joined(separator: " "))\n\n")
         DispatchQueue.main.async { self.startLogMirror() }
         t.start()
     }

@@ -1,4 +1,4 @@
-# Debian Pocket — bootfix-3 (UTM 4.7.5)
+# Debian Pocket — bootfix-4 (UTM 4.7.5)
 
 This is a revised SOURCE build kit, not a compiled IPA. It retains Debian 13,
 Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
@@ -12,7 +12,7 @@ Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
    gate and the Xcode build before it packages a release.
 3. Install the new `DebianPocket.ipa` into LiveContainer, replacing the existing
    app while preserving its data. Fully close the existing session first.
-4. Confirm settings and the terminal say **bootfix-3 / UTM 4.7.5**. If they do not,
+4. Confirm settings and the terminal say **bootfix-4 / UTM 4.7.5**. If they do not,
    you are still running the previous IPA.
 5. Keep your working StikDebug universal.js setup for LiveContainer. Start with
    **1024 MB**, **1 CPU**, and an **empty Extra QEMU arguments** field. Previously
@@ -98,3 +98,17 @@ The smoke test streams console output, prints progress every 15 seconds, and
 fails immediately if the interactive wizard reappears. The 600-second deadline
 and Docker success requirement are retained. This fix has not yet been rerun
 on GitHub or verified on the iPhone.
+
+## bootfix-4 — Docker CLI packaging correction
+
+Run 38134388022 reached a root shell around 107 seconds after VM launch.
+The image installed docker.io with --no-install-recommends, which omitted the
+separate docker-cli package in Debian 13. The old check hid command errors and
+waited even after its retry loop finished. docker-cli is now explicitly installed
+and its executable/version checked during image creation. The serial test has
+bounded Docker calls, explicit missing-CLI/failure markers and service diagnostics.
+
+No fresh full VM run or iPhone launch has been performed for this revision.
+Existing persistent disks do not inherit newly installed packages from the
+bundled image: once at their root shell, run `apt-get update && apt-get install -y
+docker-cli` to update them without resetting the disk.
