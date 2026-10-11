@@ -17,13 +17,14 @@ log_path = vm / 'smoke-serial.log'
 parent, guest = socket.socketpair()
 args = [
     'qemu-system-aarch64', '-nodefaults', '-no-user-config',
+    '-rtc', 'base=utc,clock=host',
     '-machine', 'virt', '-cpu', 'cortex-a72', '-smp', '1', '-m', '1024',
     '-accel', 'tcg,thread=single,tb-size=256',
     '-kernel', str(vm / 'Image'), '-initrd', str(vm / 'initrd'),
-    '-append', 'root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.firstboot=off',
+    '-append', 'root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.firstboot=off pocket.timezone=Etc/UTC',
     '-drive', f'if=none,id=hd0,file={vm / "disk.qcow2"},format=qcow2,cache=writeback,discard=unmap',
     '-snapshot', '-device', 'virtio-blk-pci,drive=hd0',
-    '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0,romfile=',
+    '-netdev', 'user,id=net0,ipv6=off', '-device', 'virtio-net-pci,netdev=net0,romfile=',
     '-device', 'virtio-rng-pci', '-display', 'none', '-monitor', 'none',
     '-chardev', f'socket,id=con0,fd={guest.fileno()},server=off', '-serial', 'chardev:con0',
 ]
@@ -36,12 +37,14 @@ with open(vm / 'smoke-qemu.log', 'wb') as errors, open(log_path, 'wb') as log:
     print('Boot test started: waiting for Debian shell, then Docker (maximum 600 seconds)', flush=True)
     tail = b''
     sent = False
+    network_sent = False
+    apt_sent = False
     passed = False
     try:
         while time.monotonic() < deadline:
             if time.monotonic() >= next_report:
                 print(f'\n[boot test: {int(time.monotonic() - started)}s] waiting for ' +
-                      ('Docker response' if sent else 'root shell'), flush=True)
+                      ('APT/clock response' if apt_sent else 'DNS/HTTPS response' if network_sent else ('Docker response' if sent else 'root shell')), flush=True)
                 next_report = time.monotonic() + 15
             if proc.poll() is not None:
                 raise RuntimeError(f'QEMU exited early ({proc.returncode}); inspect smoke-qemu.log')
@@ -58,7 +61,7 @@ with open(vm / 'smoke-qemu.log', 'wb') as errors, open(log_path, 'wb') as log:
             tail = (tail + data)[-65536:]
             clean = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', tail)
             if b'Please configure your system!' in clean or b'-- Press any key to proceed --' in clean:
-                raise RuntimeError('Interactive first-boot wizard blocked startup; check image provisioning and systemd.firstboot=off')
+                raise RuntimeError('Interactive first-boot wizard blocked startup; check image provisioning and systemd.firstboot=off pocket.timezone=Etc/UTC')
             if not sent and re.search(rb'root@debian-pocket:[^\r\n]*#', clean):
                 command = (
                     "if ! command -v docker >/dev/null 2>&1; then "
@@ -78,8 +81,29 @@ with open(vm / 'smoke-qemu.log', 'wb') as errors, open(log_path, 'wb') as log:
             if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_FAILED\r?\n', clean):
                 raise RuntimeError('Docker did not become ready; guest service diagnostics are above')
             if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_DOCKER_READY\r?\n', clean):
+                if not network_sent:
+                    parent.sendall(b"if timeout 45 pocket-net; then printf '\\n%s\\n' DEBIAN_POCKET_NETWORK_READY; else printf '\\n%s\\n' DEBIAN_POCKET_NETWORK_FAILED; fi\n")
+                    network_sent = True
+            if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_NETWORK_FAILED\r?\n', clean):
+                raise RuntimeError('Guest network check failed; DNS/HTTPS diagnostics are above')
+            if network_sent and re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_NETWORK_READY\r?\n', clean):
+                if not apt_sent:
+                    host_epoch = int(time.time())
+                    command = (
+                        f"now=$(date +%s); delta=$((now - {host_epoch})); "
+                        "date -Is; if [ $delta -lt -30 ] || [ $delta -gt 30 ]; then "
+                        "printf '\\n%s\\n' DEBIAN_POCKET_CLOCK_FAILED; "
+                        "elif timeout 180 apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=0 update; then "
+                        "printf '\\n%s\\n' DEBIAN_POCKET_APT_READY; else "
+                        "printf '\\n%s\\n' DEBIAN_POCKET_APT_FAILED; fi\n"
+                    )
+                    parent.sendall(command.encode())
+                    apt_sent = True
+            if re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_(?:APT|CLOCK)_FAILED\r?\n', clean):
+                raise RuntimeError('Guest APT/clock verification failed; see serial output')
+            if apt_sent and re.search(rb'(?:^|[\r\n])DEBIAN_POCKET_APT_READY\r?\n', clean):
                 passed = True
-                print('PASS: ARM64 kernel, root filesystem, serial login, and Docker daemon')
+                print('PASS: ARM64 Linux, root login, Docker daemon, guest mirror HTTPS, host clock and apt-get update')
                 break
         if not passed:
             raise RuntimeError(f'Boot/Docker timed out; inspect {log_path}')

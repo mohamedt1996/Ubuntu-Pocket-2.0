@@ -15,14 +15,36 @@ struct ContentView: View {
     @AppStorage("vmCpus") private var cpus: Int = 1
     @AppStorage("extraArgs") private var extraArgs: String = ""
     @State private var confirmReset = false
+    @State private var confirmGuestTools = false
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var background = BackgroundExecution.shared
 
     var body: some View {
         switch vm.state {
         case .booting, .running:
-            TerminalScreen()
-                .ignoresSafeArea(.container, edges: .bottom)
-                .background(Color.black)
-                .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+            VStack(spacing: 0) {
+                HStack {
+                    Text(background.status).font(.caption2).lineLimit(1)
+                    Spacer()
+                    Button("Guest tools") { confirmGuestTools = true }
+                        .font(.caption)
+                }
+                .padding(8)
+                TerminalScreen()
+            }
+            .ignoresSafeArea(.container, edges: .bottom)
+            .background(Color.black)
+            .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+            .onChange(of: scenePhase) { phase in
+                if phase == .inactive || phase == .background { background.leaveForeground() }
+                else if phase == .active { background.enterForeground() }
+            }
+            .alert("Install guest tools?", isPresented: $confirmGuestTools) {
+                Button("Install") { vm.installGuestTools() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("First stop any running command with Ctrl+C and wait for the root prompt. This installs the status/network commands, quiets console messages, and sets APT to IPv4 on your existing disk.")
+            }
         default:
             settings
         }
@@ -53,7 +75,7 @@ struct ContentView: View {
     private var settings: some View {
         NavigationView {
             Form {
-                Section { Text("bootfix-5 · UTM 4.7.5").font(.caption) }
+                Section { Text("bootfix-7 · UTM 4.7.5").font(.caption) }
                 Section(footer: Text(jitHelp).font(.footnote)) {
                     HStack {
                         Text("JIT")

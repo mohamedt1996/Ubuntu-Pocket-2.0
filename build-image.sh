@@ -3,6 +3,7 @@
 # Runs on a GitHub ubuntu (x86_64) runner using qemu-user-static + chroot.
 set -euxo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${1:-vm}"
 SIZE="${DISK_SIZE:-16G}"
 # Official Debian cloud image, "nocloud" flavour: no cloud-init, made for plain QEMU
@@ -45,7 +46,7 @@ sudo tee $R/tmp/setup.sh > /dev/null <<'CHROOT'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends docker.io docker-cli docker-compose containerd runc iptables \
-  ca-certificates curl nano htop less iproute2 iputils-ping procps
+  ca-certificates tzdata curl nano htop less iproute2 iputils-ping procps
 # Check CLI availability while building, before spending time on a VM boot.
 command -v docker
 command -v dockerd
@@ -136,6 +137,9 @@ X
 CHROOT
 sudo chroot $R /bin/bash -eux /tmp/setup.sh < /dev/null
 sudo rm -f $R/tmp/setup.sh
+sudo cp "$SCRIPT_DIR/guest-update.sh" $R/tmp/guest-update.sh
+sudo chroot $R /usr/bin/env POCKET_IMAGE_BUILD=1 /bin/sh /tmp/guest-update.sh
+sudo rm -f $R/tmp/guest-update.sh
 
 # Kernel + initrd straight from the image so modules match
 KVER=$(ls $R/boot | sed -n 's/^vmlinuz-//p' | sort -V | tail -1)

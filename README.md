@@ -1,4 +1,4 @@
-# Debian Pocket — bootfix-5 (UTM 4.7.5)
+# Debian Pocket — bootfix-7 (UTM 4.7.5)
 
 This is a revised SOURCE build kit, not a compiled IPA. It retains Debian 13,
 Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
@@ -12,7 +12,7 @@ Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
    gate and the Xcode build before it packages a release.
 3. Install the new `DebianPocket.ipa` into LiveContainer, replacing the existing
    app while preserving its data. Fully close the existing session first.
-4. Confirm settings and the terminal say **bootfix-5 / UTM 4.7.5**. If they do not,
+4. Confirm settings and the terminal say **bootfix-7 / UTM 4.7.5**. If they do not,
    you are still running the previous IPA.
 5. Keep your working StikDebug universal.js setup for LiveContainer. Start with
    **1024 MB**, **1 CPU**, and an **empty Extra QEMU arguments** field. Previously
@@ -125,3 +125,52 @@ failure hint. It does not change StikDebug settings or erase the guest disk.
 
 A genuinely persistent P_TRACED flag still blocks launch, with an explicit message.
 This regression fix has logic tests but has not been tested on an iPhone.
+
+## bootfix-7 — quiet console, network checks and limited background time
+
+The iPhone has now booted bootfix-5. The screenshot shows APT waiting to connect,
+not a successful remote download. No on-device internet success is claimed.
+
+- Normal iOS boot keeps systemd service status lines but removes ignore_loglevel
+  and uses quiet/loglevel=3 so informational kernel audit messages stay off the
+  terminal. System logs remain available through journalctl/dmesg.
+- New images install pocket-status (actual local service/address/route states)
+  and pocket-net (DNS plus a bounded IPv4 HTTPS mirror request).
+- APT uses IPv4 and finite connection timeouts; QEMU's guest IPv6 is disabled.
+  This addresses a possible IPv6 path problem, not a proven cause of the stall.
+- CI now requires the guest mirror HTTPS check as well as Docker readiness.
+  This tests GitHub's network path, not your iPhone's VPN/Wi-Fi/cellular path.
+- The app requests UIKit's finite background grace period on leaving foreground
+  and ends it on return or expiry. It cannot guarantee always-on background
+  execution, survive force-quit, or override LiveContainer/iOS suspension.
+
+### Existing disk: no reset needed
+
+Install the new IPA, launch Debian, stop any running apt command with Ctrl+C,
+and wait for the root prompt. Tap **Guest tools → Install**. This runs the bundled
+idempotent guest-update.sh inside your existing VM; it does not reinstall Debian
+or erase data. Then use:
+
+    pocket-status
+    pocket-net
+    apt update
+
+You are already root, so sudo is unnecessary. If pocket-net fails, copy its
+output; it distinguishes interface/route configuration, name lookup and HTTPS
+without guessing that the internet is available.
+
+You can quiet the current session and test APT before rebuilding:
+
+    dmesg -n 3
+    apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+
+Validation: shell/workflow syntax and simulated serial/network result cases.
+This iOS source update has not been compiled or tested on-device here.
+
+## bootfix-7 — host clock and mandatory guest APT gate
+
+QEMU now explicitly uses a UTC host-backed RTC. The launcher passes the iPhone's timezone to Debian; pocket-clock applies it at boot and corrects clock drift every minute, including after suspension. Existing disks need Guest tools → Install at an idle root prompt once. That action also sets the current iPhone time immediately. No disk reset is needed. Older running sessions need a full app restart to use the new RTC option.
+
+GitHub's boot gate now requires guest DNS, HTTP, HTTPS, a clock within 30 seconds of the runner, and a real apt-get update with APT::Update::Error-Mode=any. Failed repository downloads fail the build even if cached indexes exist. HTTP/HTTPS probes are bounded, APT is limited to 180 seconds, and the overall boot gate remains 600 seconds. The snapshot disk keeps CI downloads out of the shipped image.
+
+These checks run in Linux QEMU, not the iOS UTM framework. They do not prove that an iPhone's current network, VPN, DNS or embedded QEMU backend works. Capture pocket-net output on the phone if APT still hangs. Timezone changes are picked up on next VM launch or Guest tools installation. Clock drift correction can only run while iOS allows the process to execute.

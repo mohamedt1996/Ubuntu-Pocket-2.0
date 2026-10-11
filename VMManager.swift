@@ -188,6 +188,7 @@ final class VMManager: ObservableObject {
             "-L", share,
             "-nodefaults", "-no-user-config",
             "-machine", "virt",
+            "-rtc", "base=utc,clock=host",
             "-cpu", "cortex-a72",
             "-smp", "\(cpus)",
             "-m", "\(memoryMB)",
@@ -197,10 +198,10 @@ final class VMManager: ObservableObject {
                 : "tcg,thread=single,tb-size=128",
             "-kernel", kernel,
             "-initrd", initrd,
-            "-append", "root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.firstboot=off",
+            "-append", "root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 quiet loglevel=3 systemd.show_status=1 systemd.firstboot=off pocket.timezone=\(phoneTimeZone)",
             "-drive", "if=none,id=hd0,file=\(diskURL.path),format=qcow2,cache=writeback,discard=unmap",
             "-device", "virtio-blk-pci,drive=hd0",
-            "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22",
+            "-netdev", "user,id=net0,ipv6=off,hostfwd=tcp:127.0.0.1:2222-:22",
             "-device", "virtio-net-pci,netdev=net0,romfile=",
             "-device", "virtio-rng-pci",
             "-display", "none",
@@ -280,7 +281,8 @@ final class VMManager: ObservableObject {
         t.stackSize = 8 << 20
         bootStart = Date()
         DispatchQueue.main.async { self.state = .booting }
-        emitNote("[Debian Pocket] Build bootfix-5 / UTM 4.7.5 / QEMU 10.0.2\n[Debian Pocket] Starting QEMU: \(args.dropFirst().joined(separator: " "))\n\n")
+        emitNote("[Debian Pocket] Starting Debian · 1 CPU thread · serial console ready\n")
+        fputs(("[Debian Pocket] QEMU: " + args.dropFirst().joined(separator: " ") + "\n"), stderr)
         DispatchQueue.main.async { self.startLogMirror() }
         t.start()
     }
@@ -314,6 +316,29 @@ final class VMManager: ObservableObject {
             }
         }
         outputHandle = handle
+    }
+
+    // Restrict timezone to safe kernel-command-line and shell characters.
+    private var phoneTimeZone: String {
+        let name = TimeZone.current.identifier
+        return name.range(of: "^[A-Za-z0-9_+/-]+$", options: .regularExpression) != nil
+            && !name.contains("..") ? name : "Etc/UTC"
+    }
+
+    /// User-triggered only: run at an idle root shell, never during apt or another program.
+    func installGuestTools() {
+        guard let url = Bundle.main.url(forResource: "guest-update", withExtension: "sh"),
+              let script = try? String(contentsOf: url, encoding: .utf8) else {
+            emitNote("[Debian Pocket] Bundled guest-update.sh is missing.\n")
+            return
+        }
+        let command = "cat > /tmp/pocket-update.sh <<'POCKET_UPDATE_EOF'\n" + script
+            + "\nPOCKET_UPDATE_EOF\nPOCKET_TIMEZONE='\(phoneTimeZone)' POCKET_EPOCH=\(Int(Date().timeIntervalSince1970)) sh /tmp/pocket-update.sh\n"
+        send(Array(command.utf8)[...])
+    }
+
+    func runGuestCommand(_ command: String) {
+        send(Array((command + "\n").utf8)[...])
     }
 
     private func err(_ msg: String) -> NSError {
