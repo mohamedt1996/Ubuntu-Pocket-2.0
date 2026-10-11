@@ -11,8 +11,8 @@ struct UbuntuPocketApp: App {
 struct ContentView: View {
     @ObservedObject private var vm = VMManager.shared
     @ObservedObject private var jit = JITRegion.shared
-    @AppStorage("ramMB") private var ramMB: Int = 2048
-    @AppStorage("cpus") private var cpus: Int = 4
+    @AppStorage("vmRamMB") private var ramMB: Int = 1024
+    @AppStorage("vmCpus") private var cpus: Int = 4
     @AppStorage("extraArgs") private var extraArgs: String = ""
     @State private var confirmReset = false
 
@@ -68,19 +68,21 @@ struct ContentView: View {
                     }
                 }
                 Section(header: Text("Virtual machine")) {
-                    Stepper("Memory: \(ramMB) MB", value: $ramMB, in: 1024...3072, step: 256)
+                    Stepper("Memory: \(ramMB) MB", value: $ramMB, in: 512...3072, step: 256)
                     if ramMB > 2560 {
                         Text("Above 2.5 GB iOS is likely to close the app once the VM fills its memory (for example during docker pull).")
                             .font(.footnote).foregroundColor(.orange)
                     }
                     Stepper("CPU cores: \(cpus)", value: $cpus, in: 1...6)
+                    Text("Debian 13 \"trixie\" · login root / debian · 1 GB and 4 cores recommended")
+                        .font(.footnote).foregroundColor(.secondary)
                     TextField("Extra QEMU arguments (optional)", text: $extraArgs)
                         .autocapitalization(.none).disableAutocorrection(true)
                 }
                 Section {
                     Button(action: { vm.start(memoryMB: ramMB, cpus: cpus, extraArgs: extraArgs) }) {
                         HStack {
-                            Text(vm.state == .preparing ? "Preparing disk…" : "Start Ubuntu")
+                            Text(vm.state == .preparing ? "Preparing disk…" : "Start Debian")
                             if vm.state == .preparing { Spacer(); ProgressView() }
                         }
                     }
@@ -95,11 +97,11 @@ struct ContentView: View {
                     }
                 }
                 Section {
-                    Button("Reset Ubuntu disk", role: .destructive) { confirmReset = true }
+                    Button("Reset Debian disk", role: .destructive) { confirmReset = true }
                 }
             }
-            .navigationTitle("Ubuntu Pocket")
-            .alert("Erase the Ubuntu disk?", isPresented: $confirmReset) {
+            .navigationTitle("Debian Pocket")
+            .alert("Erase the Debian disk?", isPresented: $confirmReset) {
                 Button("Erase", role: .destructive) { vm.resetDisk() }
                 Button("Cancel", role: .cancel) {}
             } message: {

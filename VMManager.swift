@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-/// Boots Ubuntu (arm64) inside QEMU running in this same process.
+/// Boots Debian 13 (arm64) inside QEMU running in this same process.
 /// The guest serial console is wired to stdin/stdout, which we redirect into pipes
 /// that the terminal view reads from and writes to.
 final class VMManager: ObservableObject {
@@ -19,11 +19,12 @@ final class VMManager: ObservableObject {
     private let writeQueue = DispatchQueue(label: "vm.serial.write")
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    private var diskURL: URL { docs.appendingPathComponent("ubuntu-disk.qcow2") }
+    private var diskURL: URL { docs.appendingPathComponent("debian-disk.qcow2") }
     private var logURL: URL { docs.appendingPathComponent("qemu.log") }
     private var vmBundleDir: URL { Bundle.main.bundleURL.appendingPathComponent("VM") }
 
     private init() {
+        try? FileManager.default.removeItem(at: docs.appendingPathComponent("ubuntu-disk.qcow2"))
         lastLog = (try? String(contentsOf: logURL, encoding: .utf8)).map { String($0.suffix(4000)) }
     }
 
@@ -32,6 +33,46 @@ final class VMManager: ObservableObject {
     func attach(_ sink: @escaping (ArraySlice<UInt8>) -> Void) {
         self.sink = sink
         if !pending.isEmpty { sink(pending[...]); pending.removeAll() }
+    }
+
+    /// Feed bytes to the terminal (or buffer until it is attached). Main thread only.
+    private func emit(_ bytes: [UInt8]) {
+        if let s = sink { s(bytes[...]) } else { pending += bytes }
+    }
+
+    private func emitNote(_ text: String) {
+        let t = "\u{1b}[33m" + text.replacingOccurrences(of: "\n", with: "\r\n") + "\u{1b}[0m"
+        DispatchQueue.main.async { self.emit(Array(t.utf8)) }
+    }
+
+    private var logTimer: DispatchSourceTimer?
+    private var logOffset: UInt64 = 0
+    private var bootStart = Date()
+    private var sawGuestOutput = false
+
+    /// Copies new QEMU warnings/errors from qemu.log into the terminal in yellow,
+    /// and prints a heartbeat until the guest says anything.
+    private func startLogMirror() {
+        let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            if let h = try? FileHandle(forReadingFrom: self.logURL) {
+                h.seek(toFileOffset: self.logOffset)
+                let d = h.readDataToEndOfFile()
+                try? h.close()
+                if !d.isEmpty {
+                    self.logOffset += UInt64(d.count)
+                    self.emitNote(String(decoding: d, as: UTF8.self))
+                }
+            }
+            let secs = Int(Date().timeIntervalSince(self.bootStart))
+            if !self.sawGuestOutput && secs > 0 && secs % 10 == 0 {
+                self.emitNote("[Debian Pocket] \(secs)s: QEMU running, no output from Linux yet\n")
+            }
+        }
+        t.resume()
+        logTimer = t
     }
 
     func send(_ data: ArraySlice<UInt8>) {
@@ -61,7 +102,7 @@ final class VMManager: ObservableObject {
         if fm.fileExists(atPath: diskURL.path) { return }
         let src = vmBundleDir.appendingPathComponent("disk.qcow2")
         guard fm.fileExists(atPath: src.path) else { throw err("disk.qcow2 is missing from the app bundle") }
-        let tmp = docs.appendingPathComponent("ubuntu-disk.copying")
+        let tmp = docs.appendingPathComponent("debian-disk.copying")
         try? fm.removeItem(at: tmp)
         try fm.copyItem(at: src, to: tmp)
         try fm.moveItem(at: tmp, to: diskURL)
@@ -108,7 +149,7 @@ final class VMManager: ObservableObject {
                 : "tcg,thread=multi,tb-size=256",
             "-kernel", kernel,
             "-initrd", initrd,
-            "-append", "root=LABEL=cloudimg-rootfs rw console=ttyAMA0 quiet systemd.show_status=1",
+            "-append", "root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,0x9000000 console=ttyAMA0 systemd.show_status=1",
             "-drive", "if=none,id=hd0,file=\(diskURL.path),format=qcow2,cache=writeback,discard=unmap",
             "-device", "virtio-blk-pci,drive=hd0",
             "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22",
@@ -118,7 +159,7 @@ final class VMManager: ObservableObject {
             "-monitor", "none",
             "-serial", "stdio",
         ]
-        a += extraArgs.split(separator: " ").map(String.init)
+        a += extraArgs.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         return a
     }
 
@@ -147,6 +188,7 @@ final class VMManager: ObservableObject {
             }
             let patched = jit26_install_qemu_hooks("aarch64-softmmu")
             guard patched >= 2 else { throw err("Could not redirect QEMU's JIT allocator (patched \(patched))") }
+            emitNote("[Debian Pocket] JIT region \(JITRegion.sizeMB) MB ready, \(patched) QEMU imports redirected\n")
         }
         guard let pInit = dlsym(h, "qemu_init"),
               let pLoop = dlsym(h, "qemu_main_loop"),
@@ -177,7 +219,8 @@ final class VMManager: ObservableObject {
             let bytes = [UInt8](d)
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                if let s = self.sink { s(bytes[...]) } else { self.pending += bytes }
+                self.sawGuestOutput = true
+                self.emit(bytes)
             }
         }
         outputHandle = handle
@@ -196,10 +239,13 @@ final class VMManager: ObservableObject {
         }
         t.name = "qemu-main"
         t.stackSize = 8 << 20
+        bootStart = Date()
+        emitNote("[Debian Pocket] Starting QEMU: \(args.dropFirst().joined(separator: " "))\n\n")
+        startLogMirror()
         t.start()
     }
 
     private func err(_ msg: String) -> NSError {
-        NSError(domain: "UbuntuPocket", code: 1, userInfo: [NSLocalizedDescriptionKey: msg])
+        NSError(domain: "DebianPocket", code: 1, userInfo: [NSLocalizedDescriptionKey: msg])
     }
 }

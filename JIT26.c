@@ -197,5 +197,6 @@ int jit26_install_qemu_hooks(const char *image_name_contains) {
         total += rebind_image((const struct mach_header_64 *)_dyld_get_image_header(i),
                               _dyld_get_image_vmaddr_slide(i), rb, 5);
     }
+    fprintf(stderr, "[jit26] region %zu MB ready, patched %d QEMU imports\n", g_size >> 20, total);
     return total;
 }
