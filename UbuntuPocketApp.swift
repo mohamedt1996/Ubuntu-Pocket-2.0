@@ -12,13 +12,13 @@ struct ContentView: View {
     @ObservedObject private var vm = VMManager.shared
     @ObservedObject private var jit = JITRegion.shared
     @AppStorage("vmRamMB") private var ramMB: Int = 1024
-    @AppStorage("vmCpus") private var cpus: Int = 4
+    @AppStorage("vmCpus") private var cpus: Int = 1
     @AppStorage("extraArgs") private var extraArgs: String = ""
     @State private var confirmReset = false
 
     var body: some View {
         switch vm.state {
-        case .running:
+        case .booting, .running:
             TerminalScreen()
                 .ignoresSafeArea(.container, edges: .bottom)
                 .background(Color.black)
@@ -52,6 +52,7 @@ struct ContentView: View {
     private var settings: some View {
         NavigationView {
             Form {
+                Section { Text("bootfix-2 · UTM 4.7.5").font(.caption) }
                 Section(footer: Text(jitHelp).font(.footnote)) {
                     HStack {
                         Text("JIT")
@@ -68,13 +69,13 @@ struct ContentView: View {
                     }
                 }
                 Section(header: Text("Virtual machine")) {
-                    Stepper("Memory: \(ramMB) MB", value: $ramMB, in: 512...3072, step: 256)
+                    Stepper("Memory: \(ramMB) MB", value: $ramMB, in: 512...2048, step: 256)
                     if ramMB > 2560 {
                         Text("Above 2.5 GB iOS is likely to close the app once the VM fills its memory (for example during docker pull).")
                             .font(.footnote).foregroundColor(.orange)
                     }
-                    Stepper("CPU cores: \(cpus)", value: $cpus, in: 1...6)
-                    Text("Debian 13 \"trixie\" · login root / debian · 1 GB and 4 cores recommended")
+                    Stepper("CPU cores: \(cpus)", value: $cpus, in: 1...4)
+                    Text("Debian 13 \"trixie\" · login root / debian · First boot: 1 GB and 1 core; clear extra arguments")
                         .font(.footnote).foregroundColor(.secondary)
                     TextField("Extra QEMU arguments (optional)", text: $extraArgs)
                         .autocapitalization(.none).disableAutocorrection(true)

@@ -6,6 +6,10 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#include <sys/sysctl.h>
 #include <libkern/OSCacheControl.h>
 
 // ---- StikDebug universal protocol -------------------------------------------------
@@ -26,7 +30,9 @@ static void *g_rx = NULL;   // executable view (prepared by the debugger)
 static void *g_rw = NULL;   // writable alias
 static size_t g_size = 0;
 static int g_ready = 0;
-static int g_handed = 0;
+static _Atomic int g_handed = 0;
+static unsigned g_hook_mask = 0;
+static int g_hook_error = 0;
 
 int jit26_is_ready(void) { return g_ready; }
 size_t jit26_size(void) { return g_size; }
@@ -45,14 +51,26 @@ int jit26_prepare(size_t size, char *err, size_t errlen) {
     if (kr != KERN_SUCCESS) { snprintf(err, errlen, "vm_protect RW failed: %d", kr); JIT26Detach(); return -3; }
 
     JIT26Detach();
+    // UTM 4.7.5 issues brk #0x69 if P_TRACED remains set. universal.js
+    // uses a different protocol, so verify detach before QEMU can reach it.
+    int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    struct kinfo_proc info = {0};
+    size_t info_size = sizeof(info);
+    if (sysctl(mib, 4, &info, &info_size, NULL, 0) != 0 ||
+        (info.kp_proc.p_flag & P_TRACED)) {
+        snprintf(err, errlen, "debugger did not detach; QEMU would hit its UTM-specific breakpoint");
+        return -5;
+    }
 
     // Self-test: mov w0, #42 ; ret
     static const uint32_t code[] = { 0x52800540, 0xD65F03C0 };
     memcpy((void *)rw, code, sizeof(code));
+    sys_dcache_flush((void *)rw, sizeof(code));
     sys_icache_invalidate(rx, sizeof(code));
     int (*fn)(void) = (int (*)(void))rx;
     int r = fn();
     memset((void *)rw, 0, sizeof(code));
+    sys_dcache_flush((void *)rw, sizeof(code));
     sys_icache_invalidate(rx, sizeof(code));
     if (r != 42) { snprintf(err, errlen, "self-test returned %d", r); return -4; }
 
@@ -74,20 +92,33 @@ static int in_region(const void *p) {
                        (a >= (uintptr_t)g_rw && a < (uintptr_t)g_rw + g_size));
 }
 
+int jit26_handed(void) { return g_handed; }
+
 static void *hook_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
-    if (g_ready && !g_handed && len == g_size && fd == -1 && (flags & MAP_ANON) && !(prot & PROT_EXEC)) {
+    int big = len >= (16u << 20);
+    // UTM's QEMU (tcg/region.c) maps its code buffer with mmap(size = tb-size, PROT_READ|PROT_EXEC
+    // on iOS 26+, PROT_READ|PROT_WRITE before), treats that as the writable view, then calls
+    // mach_vm_remap to get the executable view. Match on the exact tb-size and hand over our region.
+    if (g_ready && !g_handed && len == g_size && addr == NULL && off == 0 && fd == -1 &&
+        prot == (PROT_READ | PROT_EXEC) && (flags & MAP_ANON) && !(flags & MAP_FIXED)) {
         g_handed = 1;
-        fprintf(stderr, "[jit26] gave QEMU the prepared %zu MB code buffer\n", len >> 20);
+        fprintf(stderr, "[jit26] mmap %zu MB prot=%d -> gave QEMU the prepared code buffer (rw view)\n", len >> 20, prot);
         return g_rw;
     }
-    return mmap(addr, len, prot, flags, fd, off);
+    void *r = mmap(addr, len, prot, flags, fd, off);
+    if (big) fprintf(stderr, "[jit26] mmap %zu MB prot=%d flags=0x%x fd=%d -> %p%s\n",
+                     len >> 20, prot, flags, fd, r, r == MAP_FAILED ? " (FAILED)" : "");
+    return r;
 }
 
 static kern_return_t hook_mach_vm_remap(vm_map_t tt, mach_vm_address_t *ta, mach_vm_size_t size,
                                         mach_vm_offset_t mask, int flags, vm_map_t st,
                                         mach_vm_address_t sa, boolean_t copy, vm_prot_t *cur,
                                         vm_prot_t *max, vm_inherit_t inh) {
-    if (g_ready && sa == (mach_vm_address_t)(uintptr_t)g_rw) {
+    fprintf(stderr, "[jit26] mach_vm_remap src=%p size=%llu %s\n", (void *)(uintptr_t)sa,
+            (unsigned long long)size, sa == (mach_vm_address_t)(uintptr_t)g_rw ? "(our buffer)" : "");
+    if (g_ready && g_handed && sa == (mach_vm_address_t)(uintptr_t)g_rw &&
+        size == g_size && tt == mach_task_self() && st == mach_task_self() && !copy) {
         *ta = (mach_vm_address_t)(uintptr_t)g_rx;
         if (cur) *cur = VM_PROT_READ | VM_PROT_EXECUTE;
         if (max) *max = VM_PROT_READ | VM_PROT_EXECUTE;
@@ -99,7 +130,9 @@ static kern_return_t hook_mach_vm_remap(vm_map_t tt, mach_vm_address_t *ta, mach
 static kern_return_t hook_vm_remap(vm_map_t tt, vm_address_t *ta, vm_size_t size, vm_address_t mask,
                                    int flags, vm_map_t st, vm_address_t sa, boolean_t copy,
                                    vm_prot_t *cur, vm_prot_t *max, vm_inherit_t inh) {
-    if (g_ready && sa == (vm_address_t)g_rw) {
+    fprintf(stderr, "[jit26] vm_remap src=%p %s\n", (void *)sa, sa == (vm_address_t)g_rw ? "(our buffer)" : "");
+    if (g_ready && g_handed && sa == (vm_address_t)g_rw &&
+        size == g_size && tt == mach_task_self() && st == mach_task_self() && !copy) {
         *ta = (vm_address_t)g_rx;
         if (cur) *cur = VM_PROT_READ | VM_PROT_EXECUTE;
         if (max) *max = VM_PROT_READ | VM_PROT_EXECUTE;
@@ -109,8 +142,22 @@ static kern_return_t hook_vm_remap(vm_map_t tt, vm_address_t *ta, vm_size_t size
 }
 
 static int hook_mprotect(void *addr, size_t len, int prot) {
-    if (in_region(addr)) return 0;      // region protections are owned by the debugger
-    return mprotect(addr, len, prot);
+    if (in_region(addr)) {
+        uintptr_t base = ((uintptr_t)addr >= (uintptr_t)g_rw &&
+                          (uintptr_t)addr < (uintptr_t)g_rw + g_size)
+                         ? (uintptr_t)g_rw : (uintptr_t)g_rx;
+        if (len > g_size - ((uintptr_t)addr - base)) { errno = EINVAL; return -1; }
+        // Keep debugger-owned RX pages executable. Apply actual guard pages to
+        // the RW alias instead of pretending every mprotect call succeeded.
+        if (base == (uintptr_t)g_rw && prot == PROT_NONE) return mprotect(addr, len, prot);
+        int expected = base == (uintptr_t)g_rw ? (PROT_READ | PROT_WRITE) : (PROT_READ | PROT_EXEC);
+        if (prot == expected) return 0;
+        errno = EACCES;
+        return -1;
+    }
+    int r = mprotect(addr, len, prot);
+    if (prot & PROT_EXEC) fprintf(stderr, "[jit26] mprotect %p len=%zu prot=%d -> %d\n", addr, len, prot, r);
+    return r;
 }
 
 static int hook_munmap(void *addr, size_t len) {
@@ -137,12 +184,17 @@ static int rebind_section(const struct section_64 *s, intptr_t slide, const stru
         for (int j = 0; j < n; j++) {
             if (strcmp(name + 1, rb[j].name) != 0) continue;
             if (!unlocked) {
-                vm_protect(mach_task_self(), (vm_address_t)slots, s->size, FALSE,
-                           VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                vm_size_t page = (vm_size_t)getpagesize();
+                vm_address_t begin = (vm_address_t)slots & ~(page - 1);
+                vm_address_t end = ((vm_address_t)slots + s->size + page - 1) & ~(page - 1);
+                kern_return_t kr = vm_protect(mach_task_self(), begin, end - begin, FALSE,
+                                               VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                if (kr != KERN_SUCCESS) { g_hook_error = 1; return patched; }
                 unlocked = 1;
             }
             slots[i] = rb[j].repl;
             patched++;
+            g_hook_mask |= 1u << j;
         }
     }
     return patched;
@@ -190,6 +242,8 @@ int jit26_install_qemu_hooks(const char *image_name_contains) {
         { "mprotect", (void *)hook_mprotect },
         { "munmap", (void *)hook_munmap },
     };
+    g_hook_mask = 0;
+    g_hook_error = 0;
     int total = 0;
     for (uint32_t i = 0; i < _dyld_image_count(); i++) {
         const char *name = _dyld_get_image_name(i);
@@ -198,5 +252,8 @@ int jit26_install_qemu_hooks(const char *image_name_contains) {
                               _dyld_get_image_vmaddr_slide(i), rb, 5);
     }
     fprintf(stderr, "[jit26] region %zu MB ready, patched %d QEMU imports\n", g_size >> 20, total);
+    // Require each critical operation, not an arbitrary count of imports.
+    if (g_hook_error || !(g_hook_mask & 1u) || !(g_hook_mask & 6u) ||
+        !(g_hook_mask & 8u) || !(g_hook_mask & 16u)) return -1;
     return total;
 }

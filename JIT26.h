@@ -12,5 +12,8 @@ int jit26_is_ready(void);
 size_t jit26_size(void);
 
 /// Redirects QEMU's split-W^X code buffer allocation (mmap / mach_vm_remap / mprotect)
-/// inside the loaded QEMU image to the prepared region. Returns number of patched imports.
+/// inside the loaded QEMU image to the prepared region. Returns number of patched imports, or -1 if any required hook is missing.
 int jit26_install_qemu_hooks(const char *image_name_contains);
+
+/// 1 once QEMU took the prepared buffer.
+int jit26_handed(void);
