@@ -21,6 +21,9 @@ final class VMManager: ObservableObject {
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var diskURL: URL { docs.appendingPathComponent("debian-disk.qcow2") }
     private var logURL: URL { docs.appendingPathComponent("qemu.log") }
+    private var serialLogURL: URL { docs.appendingPathComponent("serial.log") }
+    private var cpuLogURL: URL { docs.appendingPathComponent("cpu-trace.log") }
+    private var serialShown: UInt64 = 0
     private var vmBundleDir: URL { Bundle.main.bundleURL.appendingPathComponent("VM") }
 
     private init() {
@@ -67,12 +70,32 @@ final class VMManager: ObservableObject {
                 }
             }
             let secs = Int(Date().timeIntervalSince(self.bootStart))
-            if !self.sawGuestOutput && secs > 0 && secs % 10 == 0 {
-                self.emitNote("[Debian Pocket] \(secs)s: QEMU running, no output from Linux yet\n")
+            let serialSize = self.fileSize(self.serialLogURL)
+            // If Linux is writing to the serial log but nothing reached the terminal pipe,
+            // show the log file instead so you can still read the boot.
+            if !self.sawGuestOutput && serialSize > self.serialShown && secs >= 5,
+               let h = try? FileHandle(forReadingFrom: self.serialLogURL) {
+                h.seek(toFileOffset: self.serialShown)
+                let d = h.readDataToEndOfFile(); try? h.close()
+                self.serialShown += UInt64(d.count)
+                let text = String(decoding: d, as: UTF8.self).replacingOccurrences(of: "\n", with: "\r\n")
+                DispatchQueue.main.async { self.emit(Array(text.utf8)) }
+            }
+            if secs > 0 && secs % 10 == 0 && secs <= 300 && !self.sawGuestOutput {
+                let handed = jit26_handed() != 0 ? "yes" : "NO"
+                self.emitNote("[Debian Pocket] \(secs)s: serial.log \(self.human(serialSize)), cpu-trace \(self.human(self.fileSize(self.cpuLogURL))), code buffer used: \(handed)\n")
             }
         }
         t.resume()
         logTimer = t
+    }
+
+    private func fileSize(_ url: URL) -> UInt64 {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    private func human(_ n: UInt64) -> String {
+        n < 1024 ? "\(n) B" : n < 1 << 20 ? "\(n >> 10) KB" : "\(n >> 20) MB"
     }
 
     func send(_ data: ArraySlice<UInt8>) {
@@ -157,7 +180,11 @@ final class VMManager: ObservableObject {
             "-device", "virtio-rng-pci",
             "-display", "none",
             "-monitor", "none",
-            "-serial", "stdio",
+            // Serial console on stdin/stdout, also copied to serial.log for diagnosis
+            "-chardev", "stdio,id=con0,signal=off,logfile=\(serialLogURL.path)",
+            "-serial", "chardev:con0",
+            // Diagnostic: QEMU logs every translated guest block here, so we can see the CPU run
+            "-d", "in_asm,int,guest_errors", "-D", cpuLogURL.path,
         ]
         a += extraArgs.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         return a
@@ -209,6 +236,8 @@ final class VMManager: ObservableObject {
 
         // QEMU warnings/errors go to a log file so they survive a crash
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        try? FileManager.default.removeItem(at: serialLogURL)
+        try? FileManager.default.removeItem(at: cpuLogURL)
         let logFD = open(logURL.path, O_WRONLY | O_TRUNC)
         if logFD >= 0 { dup2(logFD, STDERR_FILENO); close(logFD) }
 
