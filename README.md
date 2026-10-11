@@ -1,7 +1,28 @@
-# Debian Pocket — bootfix-7 (UTM 4.7.5)
+# Debian Pocket — server-tools-1 / 1.1.0 (UTM 4.7.5)
 
 This is a revised SOURCE build kit, not a compiled IPA. It retains Debian 13,
 Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
+
+
+## New in server-tools-1
+
+- General editable TCP and UDP forwarding. Add, edit, disable or delete mappings before boot; changes made during a session apply after clean shutdown and a full app relaunch. The active-session list remains separate from saved settings. Duplicate protocol/host ports and invalid port numbers are rejected. All binds use iPhone loopback, not the Wi-Fi interface.
+- Any Docker server can be mapped; this does not automatically publish every container port. For `docker run -p 8080:80 ...`, set Debian port 8080 and choose a free iPhone port. Open the matching localhost URL for HTTP services. UDP and non-web TCP services need their own clients. SSH's 2222 mapping can be edited or removed; there is no special case for Stremio.
+- Tools → Open server provides saved links and an in-app browser. A link is not a health check and a Docker process can be running without serving HTTP. The browser has no certificate-validation bypass.
+- Permanent public DNS (1.1.1.1 and 8.8.8.8), including migration on existing disks. Run Tools → Install / update guest tools ONCE at an idle root prompt after installing the new IPA. No disk reset. Resolver backup: /etc/resolv.conf.before-pocket. DNS choice is editable in Debian's /etc/resolv.conf; running the updater again reapplies these defaults.
+- Safe shutdown uses a dedicated QMP socket and the guest power button. It never injects shutdown text into your active terminal program. The app waits for a guest-originated shutdown, tells QEMU to exit, waits for cleanup, then shows Safe to close. If the guest ignores the power button, it reports the delay instead of killing the VM; run `poweroff` at an idle root prompt. Full app relaunch is still required for another boot.
+- Persistent terminal view across sheets, copy/paste confirmation, Ctrl+C/Esc/Tab/arrows, 9–26pt font controls, keyboard toggle, bounded recent-output search/export, and shell-size synchronization. Selection/copy is provided by SwiftTerm. Transcript search is recent raw console output with CSI escapes removed, not a full terminal-screen search.
+- Fresh disks include tmux. On an older disk run `apt install tmux`, then Tools → Start / resume tmux session. New/next window buttons send Ctrl+B C/N and require tmux to be active. Sessions persist while the VM is alive, not through shutdown.
+- Experimental terminal PiP renders the terminal as a read-only video at 1fps using AVSampleBufferDisplayLayer. Enable the inline preview, wait for availability, then tap Start PiP. Use the system PiP return control to restore the terminal. No keyboard input in PiP. No silent audio or fake location updates. UIBackgroundModes audio is declared for PiP, but LiveContainer's own host capabilities and iOS determine availability. No promise of indefinite background execution; no claim of on-device PiP verification.
+- Keep-screen-awake is optional. Normal background grace time remains bounded; minimizing/closing PiP or locking the device may suspend the VM.
+
+## Validation for this revision
+
+Local checks: Python and shell syntax; DNS migration with a real temporary symlink and repeat update; existing native C JIT contract and debugger polling tests; shell Docker probe tests; simulated console network/APT/clock success and failure cases; Swift source grammar checks (not Xcode typechecking).
+
+GitHub gates: compile/run forwarding-model tests on macOS, build the actual iOS app, boot the real ARM64 image for Docker/DNS/HTTP/HTTPS/APT/clock, then a second snapshot boot to test two host-to-guest TCP/UDP echo services and QMP graceful shutdown. Both boots have explicit deadlines and saved logs. The second boot uses Python echo services to isolate forwarding; it does not claim a Docker container image was pulled or started. No IPA is published unless every gate passes.
+
+The Xcode build, actual ARM64 gates, and PiP/LiveContainer behavior have not been executed in this editing environment. Keep the prior working IPA until the new build and device checks pass.
 
 ## Build and install
 
@@ -12,7 +33,7 @@ Docker and UTM 4.7.5's prebuilt ARM64 QEMU framework.
    gate and the Xcode build before it packages a release.
 3. Install the new `DebianPocket.ipa` into LiveContainer, replacing the existing
    app while preserving its data. Fully close the existing session first.
-4. Confirm settings and the terminal say **bootfix-7 / UTM 4.7.5**. If they do not,
+4. Confirm settings and the terminal say **server-tools-1 / UTM 4.7.5**. If they do not,
    you are still running the previous IPA.
 5. Keep your working StikDebug universal.js setup for LiveContainer. Start with
    **1024 MB**, **1 CPU**, and an **empty Extra QEMU arguments** field. Previously

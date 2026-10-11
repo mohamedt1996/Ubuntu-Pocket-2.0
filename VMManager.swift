@@ -6,13 +6,21 @@ import Darwin
 final class VMManager: ObservableObject {
     static let shared = VMManager()
 
-    enum State: Equatable { case stopped, preparing, booting, running, failed(String) }
+    enum State: Equatable { case stopped, preparing, booting, running, shuttingDown, poweredOff, failed(String) }
 
     @Published private(set) var state: State = .stopped
     @Published private(set) var lastLog: String?
 
+    @Published private(set) var controlReady = false
+    @Published private(set) var controlMessage = ""
+    @Published private(set) var activeForwards: [PortForward] = []
+    @Published private(set) var transcript = ""
+    private let control = QMPChannel()
+    private var guestShutdownConfirmed = false
+    private var configuredNetwork = "user,id=net0,ipv6=off"
+
     private var serialGuestFD: Int32 = -1
-    private var launchAttempted = false
+    @Published private(set) var launchAttempted = false
     private var bootPhase = "not started"
     private var guestOutputSeen = false // accessed on the main queue
     private var guestInput: Int32 = -1          // app end of the serial socket
@@ -42,7 +50,12 @@ final class VMManager: ObservableObject {
 
     /// Feed bytes to the terminal (or buffer until it is attached). Main thread only.
     private func emit(_ bytes: [UInt8]) {
-        if let s = sink { s(bytes[...]) } else { pending += bytes }
+        transcript += String(decoding: bytes, as: UTF8.self)
+        if transcript.utf8.count > 180_000 { transcript = String(transcript.suffix(90_000)) }
+        if let s = sink { s(bytes[...]) } else {
+            pending += bytes
+            if pending.count > 180_000 { pending.removeFirst(pending.count - 180_000) }
+        }
     }
 
     private func emitNote(_ text: String) {
@@ -128,6 +141,7 @@ final class VMManager: ObservableObject {
     // MARK: Disk
 
     func resetDisk() {
+        guard !launchAttempted else { return }
         try? FileManager.default.removeItem(at: diskURL)
     }
 
@@ -149,12 +163,26 @@ final class VMManager: ObservableObject {
 
     func start(memoryMB: Int, cpus: Int, extraArgs: String) {
         guard !launchAttempted, state != .preparing else { return }
+        do {
+            configuredNetwork = try PortForward.networkArgument(PortStore.shared.rules)
+            activeForwards = PortStore.shared.rules
+        } catch { state = .failed(error.localizedDescription); return }
         launchAttempted = true
         state = .preparing
+        control.onReady = { [weak self] in self?.controlReady = true }
+        control.onError = { [weak self] message in self?.controlMessage = message }
+        control.onShutdown = { [weak self] in
+            guard let self = self else { return }
+            self.guestShutdownConfirmed = true
+            self.state = .shuttingDown
+            self.controlMessage = "Debian powered off. Finishing disk cleanup…"
+            self.control.execute("quit")
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try self.prepareDisk()
                 try self.setupConsole()
+                try self.control.openChannel()
                 let args = try self.buildArgs(memoryMB: memoryMB, cpus: cpus, extraArgs: extraArgs)
                 try self.launch(args)
 
@@ -201,11 +229,13 @@ final class VMManager: ObservableObject {
             "-append", "root=/dev/vda1 rw rootwait net.ifnames=0 earlycon=pl011,mmio32,0x09000000 console=ttyAMA0,115200 quiet loglevel=3 systemd.show_status=1 systemd.firstboot=off pocket.timezone=\(phoneTimeZone)",
             "-drive", "if=none,id=hd0,file=\(diskURL.path),format=qcow2,cache=writeback,discard=unmap",
             "-device", "virtio-blk-pci,drive=hd0",
-            "-netdev", "user,id=net0,ipv6=off,hostfwd=tcp:127.0.0.1:2222-:22",
+            "-netdev", configuredNetwork,
             "-device", "virtio-net-pci,netdev=net0,romfile=",
             "-device", "virtio-rng-pci",
             "-display", "none",
-            "-monitor", "none",
+            "-monitor", "none", "-no-shutdown",
+            "-chardev", "socket,id=control,fd=\(control.guestFD),server=off",
+            "-mon", "chardev=control,mode=control",
             // Dedicated connected socket, also copied to serial.log for diagnosis
             "-chardev", "socket,id=con0,fd=\(serialGuestFD),server=off,logfile=\(serialLogURL.path)",
             "-serial", "chardev:con0",
@@ -275,13 +305,22 @@ final class VMManager: ObservableObject {
             self.phase("QEMU initialized; waiting for Linux serial")
             let status = qLoop()
             qClean(status)
-            exit(status)   // QEMU cannot be restarted in-process; guest poweroff closes the app
+            DispatchQueue.main.async {
+                self.logTimer?.cancel(); self.logTimer = nil
+                self.controlReady = false
+                self.outputHandle?.readabilityHandler = nil
+                TerminalPiP.shared.stop()
+                self.state = self.guestShutdownConfirmed && status == 0
+                    ? .poweredOff : .failed("QEMU stopped (status \(status)); clean shutdown was not confirmed.")
+                self.controlMessage = self.state == .poweredOff
+                    ? "Disk cleanup complete. Safe to close. Reopen the app to start Debian again." : ""
+            }
         }
         t.name = "qemu-main"
         t.stackSize = 8 << 20
         bootStart = Date()
         DispatchQueue.main.async { self.state = .booting }
-        emitNote("[Debian Pocket] Starting Debian · 1 CPU thread · serial console ready\n")
+        emitNote("[Debian Pocket] Starting Debian · serial console ready\n")
         fputs(("[Debian Pocket] QEMU: " + args.dropFirst().joined(separator: " ") + "\n"), stderr)
         DispatchQueue.main.async { self.startLogMirror() }
         t.start()
@@ -311,7 +350,7 @@ final class VMManager: ObservableObject {
                 guard let self = self else { return }
                 self.guestOutputSeen = true
                 self.bootPhase = "Linux serial active"
-                self.state = .running
+                if self.state == .booting { self.state = .running }
                 self.emit(Array(data))
             }
         }
@@ -335,6 +374,17 @@ final class VMManager: ObservableObject {
         let command = "cat > /tmp/pocket-update.sh <<'POCKET_UPDATE_EOF'\n" + script
             + "\nPOCKET_UPDATE_EOF\nPOCKET_TIMEZONE='\(phoneTimeZone)' POCKET_EPOCH=\(Int(Date().timeIntervalSince1970)) sh /tmp/pocket-update.sh\n"
         send(Array(command.utf8)[...])
+    }
+
+    func requestShutdown() {
+        guard controlReady, state == .running || state == .booting else { return }
+        state = .shuttingDown
+        controlMessage = "Waiting for Debian to shut down. Keep the app open."
+        control.execute("system_powerdown")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            guard let self = self, self.state == .shuttingDown, !self.guestShutdownConfirmed else { return }
+            self.controlMessage = "Debian has not confirmed shutdown yet. If the power button is ignored, run poweroff at a root prompt. Nothing has been force-stopped."
+        }
     }
 
     func runGuestCommand(_ command: String) {

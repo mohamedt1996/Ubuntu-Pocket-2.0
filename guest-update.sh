@@ -9,6 +9,28 @@ Acquire::Retries "2";
 Acquire::http::Timeout "15";
 Acquire::https::Timeout "15";
 EOF
+# Public DNS bypasses the iOS/QEMU DNS forwarder that stalled APT.
+# Back up the original once, then replace symlinks with an ordinary resolver file.
+if [ ! -e /etc/resolv.conf.before-pocket ] && [ -e /etc/resolv.conf ]; then
+ cp -L /etc/resolv.conf /etc/resolv.conf.before-pocket
+fi
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' > /etc/resolv.conf.pocket-new
+chmod 644 /etc/resolv.conf.pocket-new
+mv -f /etc/resolv.conf.pocket-new /etc/resolv.conf
+mkdir -p /etc/systemd/network/10-qemu.network.d /etc/systemd/logind.conf.d
+cat > /etc/systemd/network/10-qemu.network.d/80-pocket-dns.conf <<'EOF'
+[Network]
+DNS=
+DNS=1.1.1.1 8.8.8.8
+[DHCPv4]
+UseDNS=no
+[IPv6AcceptRA]
+UseDNS=no
+EOF
+cat > /etc/systemd/logind.conf.d/80-pocket-power.conf <<'EOF'
+[Login]
+HandlePowerKey=poweroff
+EOF
 # Keep kernel warnings/errors in the journal; hide informational console spam.
 printf 'kernel.printk = 3 4 1 3\n' > /etc/sysctl.d/80-pocket-console.conf
 # Never alter the build host's kernel from inside its chroot.

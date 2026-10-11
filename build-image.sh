@@ -46,7 +46,7 @@ sudo tee $R/tmp/setup.sh > /dev/null <<'CHROOT'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends docker.io docker-cli docker-compose containerd runc iptables \
-  ca-certificates tzdata curl nano htop less iproute2 iputils-ping procps
+  ca-certificates tzdata curl nano htop less iproute2 iputils-ping procps tmux python3 dbus
 # Check CLI availability while building, before spending time on a VM boot.
 command -v docker
 command -v dockerd
@@ -87,7 +87,7 @@ Name=eth0 en*
 [Network]
 Address=10.0.2.15/24
 Gateway=10.0.2.2
-DNS=10.0.2.3
+DNS=1.1.1.1 8.8.8.8
 X
 if [ -x /usr/lib/systemd/systemd-networkd ] || [ -x /lib/systemd/systemd-networkd ]; then
   systemctl enable systemd-networkd.service
@@ -104,7 +104,7 @@ iface eth0 inet static
 X
 fi
 rm -f /etc/resolv.conf.orig
-printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf.final
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' > /etc/resolv.conf.final
 
 # Trim boot time under emulation
 systemctl mask systemd-networkd-wait-online.service apt-daily.timer apt-daily-upgrade.timer \
